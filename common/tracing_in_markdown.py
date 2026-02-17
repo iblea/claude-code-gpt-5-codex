@@ -10,6 +10,12 @@ def write_request_trace(  # pylint: disable=unused-argument
     *,
     timestamp: str,
     calling_method: str,
+    inbound_api_base: Optional[str] = None,
+    inbound_headers: Optional[dict] = None,
+    outbound_api_base: Optional[str] = None,
+    target_model: Optional[str] = None,
+    requested_model: Optional[str] = None,
+    use_responses_api: Optional[bool] = None,
     messages_original: Optional[list] = None,
     params_original: Optional[dict] = None,
     messages_complapi: Optional[list] = None,
@@ -26,13 +32,28 @@ def write_request_trace(  # pylint: disable=unused-argument
     with file.open("w", encoding="utf-8") as f:
         f.write(f"# {calling_method.upper()}\n\n")
 
+        f.write("## Routing Info\n\n")
+        if requested_model is not None:
+            f.write(f"- **Requested Model (Claude Code):** `{requested_model}`\n")
+        if target_model is not None:
+            f.write(f"- **Target Model (Proxy -> Provider):** `{target_model}`\n")
+        if outbound_api_base is not None:
+            f.write(f"- **Outbound URL (Proxy -> Provider):** `{outbound_api_base}`\n")
+        if use_responses_api is not None:
+            f.write(f"- **API Format:** `{'Responses API' if use_responses_api else 'ChatCompletions API'}`\n")
+        if inbound_api_base is not None:
+            f.write(f"- **Inbound URL (Claude Code -> Proxy):** `{inbound_api_base}`\n")
+        f.write("\n")
+
+        if inbound_headers:
+            f.write("## Inbound Headers (Claude Code -> Proxy)\n\n")
+            f.write(f"```json\n{json.dumps(inbound_headers, indent=2)}\n```\n\n")
+
         f.write("## Request Messages\n\n")
 
-        # # TODO Any way to make the difference between the original and the
-        # #  other messages more intuitive ?
-        # if messages_original is not None and (messages_complapi is None or messages_original != messages_complapi):
-        #     f.write("### Original:\n")
-        #     f.write(f"```json\n{json.dumps(messages_original, indent=2)}\n```\n\n")
+        if messages_original is not None:
+            f.write("### Original (Claude Code -> Proxy):\n")
+            f.write(f"```json\n{json.dumps(messages_original, indent=2)}\n```\n\n")
 
         if messages_complapi is not None:
             f.write("### ChatCompletions API:\n")
@@ -44,11 +65,9 @@ def write_request_trace(  # pylint: disable=unused-argument
 
         f.write("## Request Params\n\n")
 
-        # # TODO Any way to make the difference between the original and the
-        # #  other parameters more intuitive ?
-        # if params_original is not None and (params_complapi is None or params_original != params_complapi):
-        #     f.write("### Original:\n")
-        #     f.write(f"```json\n{json.dumps(params_original, indent=2)}\n```\n\n")
+        if params_original is not None:
+            f.write("### Original (Claude Code -> Proxy):\n")
+            f.write(f"```json\n{json.dumps(params_original, indent=2)}\n```\n\n")
 
         if params_complapi is not None:
             f.write("### ChatCompletions API:\n")
