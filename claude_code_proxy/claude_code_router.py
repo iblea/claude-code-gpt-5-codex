@@ -44,10 +44,16 @@ class RoutedRequest:
         messages_original: list,
         params_original: dict,
         stream: bool,
+        api_base: str = None,
+        headers: dict = None,
+        litellm_params: dict = None,
     ) -> None:
         self.timestamp = generate_timestamp_utc()
         self.calling_method = calling_method
         self.model_route = ModelRoute(model)
+        self.api_base = api_base
+        self.headers = headers
+        self.litellm_params = litellm_params or {}
 
         self.messages_original = messages_original
         self.params_original = params_original
@@ -77,10 +83,26 @@ class RoutedRequest:
             self.messages_respapi = None
             self.params_respapi = None
 
+        # Resolve outbound API base URL from provider prefix
+        target_provider = self.model_route.target_model.split("/")[0] if "/" in self.model_route.target_model else None
+        _PROVIDER_API_BASES = {
+            "openai": "https://api.openai.com",
+            "anthropic": "https://api.anthropic.com",
+            "gemini": "https://generativelanguage.googleapis.com",
+            "azure": "https://<resource>.openai.azure.com",
+        }
+        self.outbound_api_base = _PROVIDER_API_BASES.get(target_provider)
+
         if WRITE_TRACES_TO_FILES:
             write_request_trace(
                 timestamp=self.timestamp,
                 calling_method=self.calling_method,
+                inbound_api_base=self.api_base,
+                inbound_headers=self.headers,
+                outbound_api_base=self.outbound_api_base,
+                target_model=self.model_route.target_model,
+                requested_model=self.model_route.requested_model,
+                use_responses_api=self.model_route.use_responses_api,
                 messages_original=self.messages_original,
                 params_original=self.params_original,
                 messages_complapi=self.messages_complapi,
@@ -99,6 +121,33 @@ class RoutedRequest:
         # TODO How to reproduce the problem that the line below is fixing ?
         #  (This fix was contributed)
         self.params_complapi.pop("context_management", None)
+        self.params_complapi.pop("output_config", None)
+
+        # Strip the first 2 items from the system message content array:
+        #   [0] "x-anthropic-billing-header: ..."
+        #   [1] "You are Claude Code, Anthropic's official CLI for Claude."
+        # These are Claude-specific and mislead non-Anthropic models about their identity.
+        if (
+            self.messages_complapi
+            and self.messages_complapi[0].get("role") == "system"
+            and isinstance(self.messages_complapi[0].get("content"), list)
+            and len(self.messages_complapi[0]["content"]) > 2
+        ):
+            self.messages_complapi[0]["content"] = self.messages_complapi[0]["content"][2:]
+
+        # TODO TEMP: Strip <system-reminder> text blocks from user messages
+        for msg in self.messages_complapi:
+            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                msg["content"] = [
+                    item for item in msg["content"]
+                    if not (
+                        isinstance(item, dict)
+                        and item.get("type") == "text"
+                        and isinstance(item.get("text"), str)
+                        and item["text"].startswith("<system-reminder>\n")
+                    )
+                ]
+
 
         if (
             self.params_complapi.get("max_tokens") == 1
@@ -184,6 +233,9 @@ class ClaudeCodeRouter(CustomLLM):
                 messages_original=messages,
                 params_original=optional_params,
                 stream=False,
+                api_base=api_base,
+                headers=headers,
+                litellm_params=litellm_params,
             )
 
             if routed_request.model_route.use_responses_api:
@@ -252,6 +304,9 @@ class ClaudeCodeRouter(CustomLLM):
                 messages_original=messages,
                 params_original=optional_params,
                 stream=False,
+                api_base=api_base,
+                headers=headers,
+                litellm_params=litellm_params,
             )
 
             if routed_request.model_route.use_responses_api:
@@ -320,6 +375,9 @@ class ClaudeCodeRouter(CustomLLM):
                 messages_original=messages,
                 params_original=optional_params,
                 stream=True,
+                api_base=api_base,
+                headers=headers,
+                litellm_params=litellm_params,
             )
 
             if routed_request.model_route.use_responses_api:
@@ -409,6 +467,9 @@ class ClaudeCodeRouter(CustomLLM):
                 messages_original=messages,
                 params_original=optional_params,
                 stream=True,
+                api_base=api_base,
+                headers=headers,
+                litellm_params=litellm_params,
             )
 
             if routed_request.model_route.use_responses_api:
