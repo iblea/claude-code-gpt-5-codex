@@ -198,6 +198,8 @@ After that, you can find the values in the `"openai.access"` and `"openai.accoun
 
 #### Verification (test)
 
+change `SYSTEM_REMINDER_REMOVE` value to `true` in `.env`.
+
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
 claude --system-prompt ''

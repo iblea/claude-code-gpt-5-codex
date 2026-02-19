@@ -20,6 +20,7 @@ ENFORCE_ONE_TOOL_CALL_PER_RESPONSE = env_var_to_bool(os.getenv("ENFORCE_ONE_TOOL
 # TODO Move these two constants to common/config.py ?
 ALWAYS_USE_RESPONSES_API = env_var_to_bool(os.getenv("ALWAYS_USE_RESPONSES_API"), "false")
 ALWAYS_USE_STREAMING = env_var_to_bool(os.getenv("ALWAYS_USE_STREAMING"), "false")
+SYSTEM_REMINDER_REMOVE = env_var_to_bool(os.getenv("SYSTEM_REMINDER_REMOVE"), "false")
 
 OPENAI_REQUEST = os.getenv("OPENAI_REQUEST", "api")
 

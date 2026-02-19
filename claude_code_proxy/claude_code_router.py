@@ -16,7 +16,7 @@ from litellm import (
     ResponsesAPIStreamingResponse,
 )
 
-from claude_code_proxy.proxy_config import CODEX_SUBSCRIPTION_INSTRUCTIONS, ENFORCE_ONE_TOOL_CALL_PER_RESPONSE, OPENAI_REQUEST, get_openai_account_id, get_openai_api_key_subscription
+from claude_code_proxy.proxy_config import CODEX_SUBSCRIPTION_INSTRUCTIONS, ENFORCE_ONE_TOOL_CALL_PER_RESPONSE, OPENAI_REQUEST, SYSTEM_REMINDER_REMOVE, get_openai_account_id, get_openai_api_key_subscription
 from claude_code_proxy.route_model import ModelRoute
 from common.refresh import ensure_token_fresh, on_auth_error, ensure_token_fresh_async, on_auth_error_async
 from common.config import WRITE_TRACES_TO_FILES
@@ -165,18 +165,19 @@ class RoutedRequest:
         ):
             self.messages_complapi[0]["content"] = self.messages_complapi[0]["content"][2:]
 
-        # TODO TEMP: Strip <system-reminder> text blocks from user messages
-        for msg in self.messages_complapi:
-            if msg.get("role") == "user" and isinstance(msg.get("content"), list):
-                msg["content"] = [
-                    item for item in msg["content"]
-                    if not (
-                        isinstance(item, dict)
-                        and item.get("type") == "text"
-                        and isinstance(item.get("text"), str)
-                        and item["text"].startswith("<system-reminder>\n")
-                    )
-                ]
+        # Strip <system-reminder> text blocks from user messages
+        if SYSTEM_REMINDER_REMOVE:
+            for msg in self.messages_complapi:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), list):
+                    msg["content"] = [
+                        item for item in msg["content"]
+                        if not (
+                            isinstance(item, dict)
+                            and item.get("type") == "text"
+                            and isinstance(item.get("text"), str)
+                            and item["text"].startswith("<system-reminder>\n")
+                        )
+                    ]
 
 
         if (

@@ -198,6 +198,8 @@ command: opencode auth login
 
 #### 확인 방법
 
+`.env` 파일에서 `SYSTEM_REMINDER_REMOVE` 변수의 값을 `true` 로 설정하십시오.
+
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
 claude --system-prompt ''
