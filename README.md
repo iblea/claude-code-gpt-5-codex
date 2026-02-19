@@ -174,6 +174,12 @@ And modify the `.env` file as follows:
 
 You can find the `OPENAI_API_KEY_SUBSCRIPTION` and `OPENAI_ACCOUNT_ID` values by logging in via codex, opencode, etc.
 
+### Login via project script
+
+```bash
+./get_token_init.sh
+```
+
 #### How to check after logging in with codex
 ```bash
 codex login
@@ -200,9 +206,24 @@ This runs Claude Code with the system prompt forcibly set to `''`. \
 (Since Claude Code's default system prompt includes model information, the model may not respond with "GPT" or "Codex" when asked about its name unless you reset the system prompt.) \
 Then ask the model its name.
 
+#### Manual Token Refresh
+
+`OPENAI_REFRESH_KEY_SUBSCRIPTION` and `OPENAI_CLIENT_ID_SUBSCRIPTION` must be set in your `.env` file.
+
+```bash
+./refresh.sh
+```
+
+Automatic token refresh is triggered in the following situations:
+
+- When a 401 error occurs
+- When the current time has passed `OPENAI_SUBSCRIPTION_EXPIRES_AT` expiration time minus 7 days
+  - If `OPENAI_SUBSCRIPTION_EXPIRES_AT` is empty, the token expiration time will not be checked.
+
+
 ## KNOWN PROBLEM
 
-**Token refresh for subscription mode may not work.**
+**Token refresh for subscription mode has not been tested, so the refresh logic may not work correctly.**
 
 **Fixed WebSearch issue in 2026.02.19.** \
 **However, only temporary fixes have been applied, so the WebSearch functionality may not work fully.**

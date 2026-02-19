@@ -174,6 +174,11 @@ subscription 형태의 통신을 위해서는 아래와 같은 설정이 필요�
 
 OPENAI_API_KEY_SUBSCRIPTION, OPENAI_ACCOUNT_ID 값은 codex, opencode 등으로 로그인하여 확인하십시오.
 
+### 프로젝트 스크립트를 통해 로그인
+
+```bash
+./get_token_init.sh
+```
 
 #### codex 로그인 후 확인 방법
 ```bash
@@ -201,10 +206,24 @@ claude --system-prompt ''
 (claude code의 기본 system prompt 에 model 정보를 강제 기입하기 때문에 시스템 프롬프트를 초기화하지 않으면, 모델명을 물었을 때, GPT, Codex 라고 응답하지 않을 수 있습니다.) \
 모델 이름을 물어봅니다.
 
+#### 토큰 Refresh 수동 업데이트
+
+.env에 `OPENAI_REFRESH_KEY_SUBSCRIPTION`, `OPENAI_CLIENT_ID_SUBSCRIPTION` 가 설정되어 있어야 합니다.
+
+```bash
+./refresh.sh
+```
+
+토큰 자동 업데이트는 다음 상황에서 작동합니다:
+
+- 401 오류 발생
+- 현재 시간이 `OPENAI_SUBSCRIPTION_EXPIRES_AT` 만료 시간 `-7 days` 를 지난 경우
+  - `OPENAI_SUBSCRIPTION_EXPIRES_AT` 값이 비어 있을 경우, 토큰 만료시간을 체크하지 않는다.
+
+
 ## KNOWN PROBLEM
 
-
-**subscription 모드에 대한 토큰 갱신이 되지 않을 수 있습니다.**
+**subscription 모드에 대한 토큰 갱신 테스트를 하지 않아, 갱신 관련 로직이 정상 작동하지 않을 수 있습니다.**
 
 **Fixed WebSearch issue in 2026.02.19.** \
 **However, only temporary fixes have been applied, so the WebSearch functionality may not work fully.**
