@@ -654,6 +654,35 @@ def _convert_content_part(role: str, part: Any) -> dict[str, Any]:
     return new_part
 
 
+def _is_anthropic_web_search_tool(tool: dict) -> bool:
+    """Detect Anthropic's web_search built-in tool in any conversion stage.
+
+    Anthropic sends ``{"type": "web_search_20250305", "name": "web_search"}``.
+    After litellm converts Anthropic → Chat Completions format, this may arrive
+    as a function tool whose name is ``web_search`` or ``web_search_20250305``
+    with an invalid ``parameters`` schema.
+    """
+    tool_type = tool.get("type", "")
+
+    # Direct built-in type passed through (e.g. "web_search_20250305")
+    if isinstance(tool_type, str) and tool_type.startswith("web_search") and tool_type != "function":
+        return True
+
+    # Converted to function format by litellm
+    name = None
+    if tool_type == "function":
+        fn = tool.get("function")
+        if isinstance(fn, dict):
+            name = fn.get("name")
+        if not name:
+            name = tool.get("name")
+
+    if isinstance(name, str) and (name == "web_search" or name.startswith("web_search_20")):
+        return True
+
+    return False
+
+
 def _convert_tools_list(tools: Any) -> list[dict[str, Any]]:
     if tools is None:
         return []
@@ -666,9 +695,19 @@ def _convert_tools_list(tools: Any) -> list[dict[str, Any]]:
         raise TypeError("tools must be a list or dict when targeting the Responses API")
 
     converted: list[dict[str, Any]] = []
+    web_search_added = False
     for idx, tool in enumerate(iterable):
         if not isinstance(tool, dict):
             raise TypeError(f"tool definition at index {idx} must be a mapping")
+
+        # Convert Anthropic's web_search built-in tool to ChatGPT Responses
+        # API format.  ChatGPT Codex expects:
+        #   {"type": "web_search", "external_web_access": true}
+        if _is_anthropic_web_search_tool(tool):
+            if not web_search_added:
+                converted.append({"type": "web_search", "external_web_access": True})
+                web_search_added = True
+            continue
 
         # Already Responses format
         if tool.get("type") == "function" and "function" not in tool:
@@ -734,6 +773,12 @@ def _convert_tool_choice(tool_choice: Any) -> Optional[Any]:
         return tool_choice
 
     if isinstance(tool_choice, dict):
+        # If tool_choice references a web_search built-in tool, drop it so the
+        # model can decide freely.  The web_search built-in is not a function
+        # and cannot be forced via tool_choice.
+        if _is_web_search_tool_choice(tool_choice):
+            return None
+
         if isinstance(tool_choice.get("function"), dict):
             fn_payload = tool_choice["function"]
             name = fn_payload.get("name")
@@ -761,6 +806,29 @@ def _convert_tool_choice(tool_choice: Any) -> Optional[Any]:
         return deepcopy(tool_choice)
 
     return None
+
+
+def _is_web_search_tool_choice(tool_choice: dict) -> bool:
+    """Return True if tool_choice references an Anthropic web_search tool."""
+    # {"type": "function", "function": {"name": "web_search"}}
+    fn = tool_choice.get("function")
+    if isinstance(fn, dict):
+        name = fn.get("name", "")
+        if isinstance(name, str) and (name == "web_search" or name.startswith("web_search_20")):
+            return True
+
+    # {"type": "function", "name": "web_search"}  (already flattened)
+    if tool_choice.get("type") == "function":
+        name = tool_choice.get("name", "")
+        if isinstance(name, str) and (name == "web_search" or name.startswith("web_search_20")):
+            return True
+
+    # {"type": "web_search_20250305", ...}
+    tool_type = tool_choice.get("type", "")
+    if isinstance(tool_type, str) and tool_type.startswith("web_search") and tool_type != "function":
+        return True
+
+    return False
 
 
 def _normalize_type_by_role(role: str, part_type: Any) -> Optional[str]:
