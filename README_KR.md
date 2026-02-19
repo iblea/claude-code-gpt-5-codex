@@ -157,52 +157,54 @@ If you don't specify the reasoning effort level (i.e. only specify the model nam
 
 ## SUBSCRIPTION SETTINGS
 
-For the Korean version, please refer to `README_KR.md`.
+한국어 버전은 `README_KR.md` 를 참고하십시오.
 
-You can use ChatGPT's subscription plan. \
-The following settings are required for subscription-based communication:
+chatgpt의 subscription을 사용할 수 있습니다. \
+subscription 형태의 통신을 위해서는 아래와 같은 설정이 필요합니다.
 
-First, copy `.env.template` to `.env`. \
-And modify the `.env` file as follows:
+먼저, `.env.template` 파일을 `.env` 파일로 복사하십시오. \
+그리고 `.env` 파일을 다음과 같이 수정하십시오.
 
-- Set `OPENAI_REQUEST` to `subscription`.
-- Set the `OPENAI_API_KEY_SUBSCRIPTION`, `OPENAI_ACCOUNT_ID` variables.
-  - `OPENAI_API_KEY_SUBSCRIPTION`: Enter access key
-  - `OPENAI_REFRESH_KEY_SUBSCRIPTION`: Enter refresh key
-  - `OPENAI_ACCOUNT_ID`: Enter account id
-- Set `ALWAYS_USE_RESPONSES_API` and `ALWAYS_USE_STREAMING` to `true`.
+- `OPENAI_REQUEST` 를 `subscription` 으로 설정하십시오.
+- `OPENAI_API_KEY_SUBSCRIPTION`, `OPENAI_ACCOUNT_ID` 변수를 세팅하십시오.
+  - `OPENAI_API_KEY_SUBSCRIPTION`: access key 입력
+  - `OPENAI_REFRESH_KEY_SUBSCRIPTION`: refresh key 입력
+  - `OPENAI_ACCOUNT_ID`: account id 입력
+- `ALWAYS_USE_RESPONSES_API`, `ALWAYS_USE_STREAMING` 값을 true로 설정하십시오.
 
-You can find the `OPENAI_API_KEY_SUBSCRIPTION` and `OPENAI_ACCOUNT_ID` values by logging in via codex, opencode, etc.
+OPENAI_API_KEY_SUBSCRIPTION, OPENAI_ACCOUNT_ID 값은 codex, opencode 등으로 로그인하여 확인하십시오.
 
-#### How to check after logging in with codex
+
+#### codex 로그인 후 확인 방법
 ```bash
 codex login
 ```
 
-After a successful login, you can find the values in the `"tokens.id_token"` and `"tokens.account_id"` fields in `$HOME/.codex/auth`.
+로그인 성공 시, `$HOME/.codex/auth` 에서 "tokens.id_token", "tokens.account_id" 필드값을 통해 확인할 수 있습니다.
 
-#### How to check after logging in with opencode
+#### opencode 로그인 후 확인 방법
 ```
 command: opencode auth login
 - Click "OpenAI"
 - Click "ChatGPT Pro/Plus (browser)" or "ChatGPT Pro/Plus (headless)"
 ```
 
-After that, you can find the values in the `"openai.access"` and `"openai.accountId"` fields in `$HOME/.local/share/opencode/auth.json`.
+이후, 당신은 `$HOME/.local/share/opencode/auth.json` 에서 "openai.access", "openai.accountId" 필드값을 통해 확인할 수 있습니다.
 
-#### Verification (test)
+#### 확인 방법
 
 ```bash
 export ANTHROPIC_BASE_URL="http://127.0.0.1:4000"
 claude --system-prompt ''
 ```
-This runs Claude Code with the system prompt forcibly set to `''`. \
-(Since Claude Code's default system prompt includes model information, the model may not respond with "GPT" or "Codex" when asked about its name unless you reset the system prompt.) \
-Then ask the model its name.
+시스템 프롬프트를 강제로 '' 로 주입해 실행합니다. \
+(claude code의 기본 system prompt 에 model 정보를 강제 기입하기 때문에 시스템 프롬프트를 초기화하지 않으면, 모델명을 물었을 때, GPT, Codex 라고 응답하지 않을 수 있습니다.) \
+모델 이름을 물어봅니다.
 
 ## KNOWN PROBLEM
 
-**Token refresh for subscription mode may not work.**
+
+**subscription 모드에 대한 토큰 갱신이 되지 않을 수 있습니다.**
 
 **Fixed WebSearch issue in 2026.02.19.** \
 **However, only temporary fixes have been applied, so the WebSearch functionality may not work fully.**
