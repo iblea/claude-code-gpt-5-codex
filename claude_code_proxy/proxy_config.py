@@ -18,21 +18,7 @@ ENFORCE_ONE_TOOL_CALL_PER_RESPONSE = env_var_to_bool(os.getenv("ENFORCE_ONE_TOOL
 
 # TODO Move these two constants to common/config.py ?
 ALWAYS_USE_RESPONSES_API = env_var_to_bool(os.getenv("ALWAYS_USE_RESPONSES_API"), "false")
-RESPAPI_ONLY_MODELS = (
-    "codex-mini-latest",
-    "computer-use-preview",
-    "gpt-5-codex",
-    "gpt-5-pro",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.3-codex",
-    "gpt-oss-120b",
-    "gpt-oss-20b",
-    "o1-pro",
-    "o3-deep-research",
-    "o3-pro",
-    "o4-mini-deep-research",
-)
+ALWAYS_USE_STREAMING = env_var_to_bool(os.getenv("ALWAYS_USE_STREAMING"), "false")
 
 OPENAI_REQUEST = os.getenv("OPENAI_REQUEST", "api")
 OPENAI_API_KEY_SUBSCRIPTION = os.getenv("OPENAI_API_KEY_SUBSCRIPTION")
@@ -44,24 +30,8 @@ CODEX_SUBSCRIPTION_INSTRUCTIONS = _CODEX_INSTRUCTIONS_PATH.read_text(encoding="u
 ANTHROPIC = "anthropic"
 OPENAI = "openai"
 
-# Register models that litellm doesn't know about yet, so that it doesn't
-# fall back to fake-streaming (which strips "stream" from the request body
+# When ALWAYS_USE_STREAMING is true, monkey-patch litellm so that it never
+# falls back to fake-streaming (which strips "stream" from the request body
 # and breaks the ChatGPT subscription endpoint).
-_OPENAI_CODEX_MODEL_DEFAULTS = {
-    "max_input_tokens": 128000,
-    "max_output_tokens": 128000,
-    "max_tokens": 128000,
-    "mode": "responses",
-    "supported_endpoints": ["/v1/responses"],
-    "supports_native_streaming": True,
-    "supports_function_calling": True,
-    "supports_parallel_function_calling": True,
-    "supports_vision": True,
-}
-_MODELS_TO_REGISTER = {
-    model: _OPENAI_CODEX_MODEL_DEFAULTS
-    for model in RESPAPI_ONLY_MODELS
-    if model not in litellm.model_cost
-}
-if _MODELS_TO_REGISTER:
-    litellm.register_model(_MODELS_TO_REGISTER)
+if ALWAYS_USE_STREAMING:
+    litellm.utils.supports_native_streaming = lambda model, custom_llm_provider: True

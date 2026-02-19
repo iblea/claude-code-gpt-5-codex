@@ -8,7 +8,6 @@ from claude_code_proxy.proxy_config import (
     REMAP_CLAUDE_HAIKU_TO,
     REMAP_CLAUDE_OPUS_TO,
     REMAP_CLAUDE_SONNET_TO,
-    RESPAPI_ONLY_MODELS,
 )
 
 
@@ -88,9 +87,7 @@ class ModelRoute:
         if self.is_target_anthropic:
             self.use_responses_api = False
         else:
-            self.use_responses_api = ALWAYS_USE_RESPONSES_API or any(
-                model in model_name_only for model in RESPAPI_ONLY_MODELS
-            )
+            self.use_responses_api = ALWAYS_USE_RESPONSES_API
 
     def _log_model_route(self) -> None:
         log_message = f"\033[1m\033[32m{self.requested_model}\033[0m -> " f"\033[1m\033[36m{self.target_model}\033[0m"
