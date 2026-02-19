@@ -3,6 +3,7 @@ from pathlib import Path
 
 import litellm
 from common import config as common_config  # Makes sure .env is loaded  # pylint: disable=unused-import
+from common.refresh import ensure_token_fresh
 from common.utils import env_var_to_bool
 
 
@@ -21,8 +22,19 @@ ALWAYS_USE_RESPONSES_API = env_var_to_bool(os.getenv("ALWAYS_USE_RESPONSES_API")
 ALWAYS_USE_STREAMING = env_var_to_bool(os.getenv("ALWAYS_USE_STREAMING"), "false")
 
 OPENAI_REQUEST = os.getenv("OPENAI_REQUEST", "api")
+
+ensure_token_fresh()
+
 OPENAI_API_KEY_SUBSCRIPTION = os.getenv("OPENAI_API_KEY_SUBSCRIPTION")
 OPENAI_ACCOUNT_ID = os.getenv("OPENAI_ACCOUNT_ID")
+
+
+def get_openai_api_key_subscription():
+    return os.getenv("OPENAI_API_KEY_SUBSCRIPTION")
+
+
+def get_openai_account_id():
+    return os.getenv("OPENAI_ACCOUNT_ID")
 
 _CODEX_INSTRUCTIONS_PATH = Path(__file__).parent / "codex_instructions.txt"
 CODEX_SUBSCRIPTION_INSTRUCTIONS = _CODEX_INSTRUCTIONS_PATH.read_text(encoding="utf-8").strip()

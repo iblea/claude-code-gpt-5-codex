@@ -16,8 +16,9 @@ from litellm import (
     ResponsesAPIStreamingResponse,
 )
 
-from claude_code_proxy.proxy_config import CODEX_SUBSCRIPTION_INSTRUCTIONS, ENFORCE_ONE_TOOL_CALL_PER_RESPONSE, OPENAI_ACCOUNT_ID, OPENAI_API_KEY_SUBSCRIPTION, OPENAI_REQUEST
+from claude_code_proxy.proxy_config import CODEX_SUBSCRIPTION_INSTRUCTIONS, ENFORCE_ONE_TOOL_CALL_PER_RESPONSE, OPENAI_REQUEST, get_openai_account_id, get_openai_api_key_subscription
 from claude_code_proxy.route_model import ModelRoute
+from common.refresh import ensure_token_fresh, on_auth_error, ensure_token_fresh_async, on_auth_error_async
 from common.config import WRITE_TRACES_TO_FILES
 from common.tracing_in_markdown import (
     write_request_trace,
@@ -99,7 +100,9 @@ class RoutedRequest:
             target_provider == "openai-sub"
             or (target_provider == "openai" and OPENAI_REQUEST == "subscription")
         )
-        self.outbound_api_key = OPENAI_API_KEY_SUBSCRIPTION if (_is_subscription and OPENAI_API_KEY_SUBSCRIPTION) else None
+        _api_key_sub = get_openai_api_key_subscription()
+        _account_id = get_openai_account_id()
+        self.outbound_api_key = _api_key_sub if (_is_subscription and _api_key_sub) else None
 
         # Subscription endpoint adjustments
         if _is_subscription:
@@ -108,8 +111,8 @@ class RoutedRequest:
                 self.params_respapi["store"] = False
                 self.params_respapi["stream"] = True
                 self.params_respapi.pop("metadata", None)
-                if OPENAI_ACCOUNT_ID:
-                    self.params_respapi["account_id"] = OPENAI_ACCOUNT_ID
+                if _account_id:
+                    self.params_respapi["account_id"] = _account_id
             if self.params_complapi is not None:
                 self.params_complapi["store"] = False
                 self.params_complapi["stream"] = True
@@ -117,8 +120,8 @@ class RoutedRequest:
 
         # Outbound headers for subscription endpoint
         self.outbound_headers = {}
-        if _is_subscription and OPENAI_ACCOUNT_ID:
-            self.outbound_headers["chatgpt-account-id"] = OPENAI_ACCOUNT_ID
+        if _is_subscription and _account_id:
+            self.outbound_headers["chatgpt-account-id"] = _account_id
 
         if WRITE_TRACES_TO_FILES:
             write_request_trace(
@@ -231,6 +234,10 @@ class RoutedRequest:
             )
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    return isinstance(exc, litellm.AuthenticationError)
+
+
 class ClaudeCodeRouter(CustomLLM):
     # pylint: disable=too-many-positional-arguments,too-many-locals
 
@@ -253,70 +260,75 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> ModelResponse:
-        try:
-            routed_request = RoutedRequest(
-                calling_method="completion",
-                model=model,
-                messages_original=messages,
-                params_original=optional_params,
-                stream=False,
-                api_base=api_base,
-                headers=headers,
-                litellm_params=litellm_params,
-            )
-
-            if routed_request.model_route.use_responses_api:
-                response_or_stream = litellm.responses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
+        ensure_token_fresh()
+        for _attempt in range(2):
+            try:
+                routed_request = RoutedRequest(
+                    calling_method="completion",
+                    model=model,
+                    messages_original=messages,
+                    params_original=optional_params,
+                    stream=False,
+                    api_base=api_base,
+                    headers=headers,
+                    litellm_params=litellm_params,
                 )
 
-                # Subscription forces stream=True; consume stream for non-streaming callers
-                if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
-                    response_respapi = None
-                    for chunk in response_or_stream:
-                        response_respapi = chunk
+                if routed_request.model_route.use_responses_api:
+                    response_or_stream = litellm.responses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+
+                    # Subscription forces stream=True; consume stream for non-streaming callers
+                    if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
+                        response_respapi = None
+                        for chunk in response_or_stream:
+                            response_respapi = chunk
+                    else:
+                        response_respapi = response_or_stream
+
+                    response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
+
                 else:
-                    response_respapi = response_or_stream
+                    response_respapi = None
+                    response_complapi: ModelResponse = litellm.completion(
+                        model=routed_request.model_route.target_model,
+                        messages=routed_request.messages_complapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        # Drop any params that are not supported by the provider
+                        drop_params=True,
+                        **routed_request.params_complapi,
+                    )
 
-                response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
+                if WRITE_TRACES_TO_FILES:
+                    write_response_trace(
+                        timestamp=routed_request.timestamp,
+                        calling_method=routed_request.calling_method,
+                        response_respapi=response_respapi,
+                        response_complapi=response_complapi,
+                    )
 
-            else:
-                response_respapi = None
-                response_complapi: ModelResponse = litellm.completion(
-                    model=routed_request.model_route.target_model,
-                    messages=routed_request.messages_complapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    # Drop any params that are not supported by the provider
-                    drop_params=True,
-                    **routed_request.params_complapi,
-                )
+                return response_complapi
 
-            if WRITE_TRACES_TO_FILES:
-                write_response_trace(
-                    timestamp=routed_request.timestamp,
-                    calling_method=routed_request.calling_method,
-                    response_respapi=response_respapi,
-                    response_complapi=response_complapi,
-                )
-
-            return response_complapi
-
-        except Exception as e:
-            raise ProxyError(e) from e
+            except Exception as e:
+                if _attempt == 0 and _is_auth_error(e):
+                    on_auth_error()
+                    continue
+                raise ProxyError(e) from e
 
     async def acompletion(
         self,
@@ -337,70 +349,75 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> ModelResponse:
-        try:
-            routed_request = RoutedRequest(
-                calling_method="acompletion",
-                model=model,
-                messages_original=messages,
-                params_original=optional_params,
-                stream=False,
-                api_base=api_base,
-                headers=headers,
-                litellm_params=litellm_params,
-            )
-
-            if routed_request.model_route.use_responses_api:
-                response_or_stream = await litellm.aresponses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
+        await ensure_token_fresh_async()
+        for _attempt in range(2):
+            try:
+                routed_request = RoutedRequest(
+                    calling_method="acompletion",
+                    model=model,
+                    messages_original=messages,
+                    params_original=optional_params,
+                    stream=False,
+                    api_base=api_base,
+                    headers=headers,
+                    litellm_params=litellm_params,
                 )
 
-                # Subscription forces stream=True; consume stream for non-streaming callers
-                if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
-                    response_respapi = None
-                    async for chunk in response_or_stream:
-                        response_respapi = chunk
+                if routed_request.model_route.use_responses_api:
+                    response_or_stream = await litellm.aresponses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
+                    )
+
+                    # Subscription forces stream=True; consume stream for non-streaming callers
+                    if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
+                        response_respapi = None
+                        async for chunk in response_or_stream:
+                            response_respapi = chunk
+                    else:
+                        response_respapi = response_or_stream
+
+                    response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
+
                 else:
-                    response_respapi = response_or_stream
+                    response_respapi = None
+                    response_complapi: ModelResponse = await litellm.acompletion(
+                        model=routed_request.model_route.target_model,
+                        messages=routed_request.messages_complapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        # Drop any params that are not supported by the provider
+                        drop_params=True,
+                        **routed_request.params_complapi,
+                    )
 
-                response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
+                if WRITE_TRACES_TO_FILES:
+                    write_response_trace(
+                        timestamp=routed_request.timestamp,
+                        calling_method=routed_request.calling_method,
+                        response_respapi=response_respapi,
+                        response_complapi=response_complapi,
+                    )
 
-            else:
-                response_respapi = None
-                response_complapi: ModelResponse = await litellm.acompletion(
-                    model=routed_request.model_route.target_model,
-                    messages=routed_request.messages_complapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    # Drop any params that are not supported by the provider
-                    drop_params=True,
-                    **routed_request.params_complapi,
-                )
+                return response_complapi
 
-            if WRITE_TRACES_TO_FILES:
-                write_response_trace(
-                    timestamp=routed_request.timestamp,
-                    calling_method=routed_request.calling_method,
-                    response_respapi=response_respapi,
-                    response_complapi=response_complapi,
-                )
-
-            return response_complapi
-
-        except Exception as e:
-            raise ProxyError(e) from e
+            except Exception as e:
+                if _attempt == 0 and _is_auth_error(e):
+                    await on_auth_error_async()
+                    continue
+                raise ProxyError(e) from e
 
     def streaming(
         self,
@@ -421,82 +438,89 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[HTTPHandler] = None,
     ) -> Generator[GenericStreamingChunk, None, None]:
-        try:
-            routed_request = RoutedRequest(
-                calling_method="streaming",
-                model=model,
-                messages_original=messages,
-                params_original=optional_params,
-                stream=True,
-                api_base=api_base,
-                headers=headers,
-                litellm_params=litellm_params,
-            )
-
-            if routed_request.model_route.use_responses_api:
-                resp_stream: BaseResponsesAPIStreamingIterator = litellm.responses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
+        ensure_token_fresh()
+        for _attempt in range(2):
+            try:
+                routed_request = RoutedRequest(
+                    calling_method="streaming",
+                    model=model,
+                    messages_original=messages,
+                    params_original=optional_params,
+                    stream=True,
+                    api_base=api_base,
+                    headers=headers,
+                    litellm_params=litellm_params,
                 )
 
-            else:
-                resp_stream: CustomStreamWrapper = litellm.completion(
-                    model=routed_request.model_route.target_model,
-                    messages=routed_request.messages_complapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    # Drop any params that are not supported by the provider
-                    drop_params=True,
-                    **routed_request.params_complapi,
-                )
-
-            for chunk_idx, chunk in enumerate[ModelResponseStream | ResponsesAPIStreamingResponse](resp_stream):
-                generic_chunk = to_generic_streaming_chunk(chunk)
-
-                if WRITE_TRACES_TO_FILES:
-                    if routed_request.model_route.use_responses_api:
-                        respapi_chunk, complapi_chunk = chunk, None
-                    else:
-                        respapi_chunk, complapi_chunk = None, chunk
-
-                    write_streaming_chunk_trace(
-                        timestamp=routed_request.timestamp,
-                        calling_method=routed_request.calling_method,
-                        chunk_idx=chunk_idx,
-                        respapi_chunk=respapi_chunk,
-                        complapi_chunk=complapi_chunk,
-                        generic_chunk=generic_chunk,
+                if routed_request.model_route.use_responses_api:
+                    resp_stream: BaseResponsesAPIStreamingIterator = litellm.responses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
                     )
 
-                yield generic_chunk
+                else:
+                    resp_stream: CustomStreamWrapper = litellm.completion(
+                        model=routed_request.model_route.target_model,
+                        messages=routed_request.messages_complapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        # Drop any params that are not supported by the provider
+                        drop_params=True,
+                        **routed_request.params_complapi,
+                    )
 
-            # EOF fallback: if provider ended stream without a terminal event and
-            # we have a pending tool with buffered args, emit once.
-            # TODO Refactor or get rid of the try/except block below after the
-            #  code in `common/utils.py` is owned (after the vibe-code there is
-            #  replaced with proper code)
-            try:
-                eof_chunk = responses_eof_finalize_chunk()
-                if eof_chunk is not None:
-                    yield eof_chunk
-            except Exception:  # pylint: disable=broad-exception-caught
-                # Ignore; best-effort fallback
-                pass
+                for chunk_idx, chunk in enumerate[ModelResponseStream | ResponsesAPIStreamingResponse](resp_stream):
+                    generic_chunk = to_generic_streaming_chunk(chunk)
 
-        except Exception as e:
-            raise ProxyError(e) from e
+                    if WRITE_TRACES_TO_FILES:
+                        if routed_request.model_route.use_responses_api:
+                            respapi_chunk, complapi_chunk = chunk, None
+                        else:
+                            respapi_chunk, complapi_chunk = None, chunk
+
+                        write_streaming_chunk_trace(
+                            timestamp=routed_request.timestamp,
+                            calling_method=routed_request.calling_method,
+                            chunk_idx=chunk_idx,
+                            respapi_chunk=respapi_chunk,
+                            complapi_chunk=complapi_chunk,
+                            generic_chunk=generic_chunk,
+                        )
+
+                    yield generic_chunk
+
+                # EOF fallback: if provider ended stream without a terminal event and
+                # we have a pending tool with buffered args, emit once.
+                # TODO Refactor or get rid of the try/except block below after the
+                #  code in `common/utils.py` is owned (after the vibe-code there is
+                #  replaced with proper code)
+                try:
+                    eof_chunk = responses_eof_finalize_chunk()
+                    if eof_chunk is not None:
+                        yield eof_chunk
+                except Exception:  # pylint: disable=broad-exception-caught
+                    # Ignore; best-effort fallback
+                    pass
+
+                return
+
+            except Exception as e:
+                if _attempt == 0 and _is_auth_error(e):
+                    on_auth_error()
+                    continue
+                raise ProxyError(e) from e
 
     async def astreaming(
         self,
@@ -517,84 +541,91 @@ class ClaudeCodeRouter(CustomLLM):
         timeout: Optional[Union[float, httpx.Timeout]] = None,
         client: Optional[AsyncHTTPHandler] = None,
     ) -> AsyncGenerator[GenericStreamingChunk, None]:
-        try:
-            routed_request = RoutedRequest(
-                calling_method="astreaming",
-                model=model,
-                messages_original=messages,
-                params_original=optional_params,
-                stream=True,
-                api_base=api_base,
-                headers=headers,
-                litellm_params=litellm_params,
-            )
-
-            if routed_request.model_route.use_responses_api:
-                resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
-                    # TODO Make sure all params are supported
-                    model=routed_request.model_route.target_model,
-                    input=routed_request.messages_respapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    **routed_request.params_respapi,
+        await ensure_token_fresh_async()
+        for _attempt in range(2):
+            try:
+                routed_request = RoutedRequest(
+                    calling_method="astreaming",
+                    model=model,
+                    messages_original=messages,
+                    params_original=optional_params,
+                    stream=True,
+                    api_base=api_base,
+                    headers=headers,
+                    litellm_params=litellm_params,
                 )
 
-            else:
-                resp_stream: CustomStreamWrapper = await litellm.acompletion(
-                    model=routed_request.model_route.target_model,
-                    messages=routed_request.messages_complapi,
-                    api_base=routed_request.outbound_api_base,
-                    api_key=routed_request.outbound_api_key,
-                    logger_fn=logger_fn,
-                    headers={**(headers or {}), **routed_request.outbound_headers},
-                    timeout=timeout,
-                    client=client,
-                    # Drop any params that are not supported by the provider
-                    drop_params=True,
-                    **routed_request.params_complapi,
-                )
-
-            chunk_idx = 0
-            async for chunk in resp_stream:
-                generic_chunk = to_generic_streaming_chunk(chunk)
-
-                if WRITE_TRACES_TO_FILES:
-                    if routed_request.model_route.use_responses_api:
-                        respapi_chunk, complapi_chunk = chunk, None
-                    else:
-                        respapi_chunk, complapi_chunk = None, chunk
-
-                    write_streaming_chunk_trace(
-                        timestamp=routed_request.timestamp,
-                        calling_method=routed_request.calling_method,
-                        chunk_idx=chunk_idx,
-                        respapi_chunk=respapi_chunk,
-                        complapi_chunk=complapi_chunk,
-                        generic_chunk=generic_chunk,
+                if routed_request.model_route.use_responses_api:
+                    resp_stream: BaseResponsesAPIStreamingIterator = await litellm.aresponses(
+                        # TODO Make sure all params are supported
+                        model=routed_request.model_route.target_model,
+                        input=routed_request.messages_respapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        **routed_request.params_respapi,
                     )
 
-                yield generic_chunk
-                chunk_idx += 1
+                else:
+                    resp_stream: CustomStreamWrapper = await litellm.acompletion(
+                        model=routed_request.model_route.target_model,
+                        messages=routed_request.messages_complapi,
+                        api_base=routed_request.outbound_api_base,
+                        api_key=routed_request.outbound_api_key,
+                        logger_fn=logger_fn,
+                        headers={**(headers or {}), **routed_request.outbound_headers},
+                        timeout=timeout,
+                        client=client,
+                        # Drop any params that are not supported by the provider
+                        drop_params=True,
+                        **routed_request.params_complapi,
+                    )
 
-            # EOF fallback: if provider ended stream without a terminal event and
-            # we have a pending tool with buffered args, emit once.
-            # TODO Refactor or get rid of the try/except block below after the
-            #  code in `common/utils.py` is owned (after the vibe-code there is
-            #  replaced with proper code)
-            try:
-                eof_chunk = responses_eof_finalize_chunk()
-                if eof_chunk is not None:
-                    yield eof_chunk
-            except Exception:  # pylint: disable=broad-exception-caught
-                # Ignore; best-effort fallback
-                pass
+                chunk_idx = 0
+                async for chunk in resp_stream:
+                    generic_chunk = to_generic_streaming_chunk(chunk)
 
-        except Exception as e:
-            raise ProxyError(e) from e
+                    if WRITE_TRACES_TO_FILES:
+                        if routed_request.model_route.use_responses_api:
+                            respapi_chunk, complapi_chunk = chunk, None
+                        else:
+                            respapi_chunk, complapi_chunk = None, chunk
+
+                        write_streaming_chunk_trace(
+                            timestamp=routed_request.timestamp,
+                            calling_method=routed_request.calling_method,
+                            chunk_idx=chunk_idx,
+                            respapi_chunk=respapi_chunk,
+                            complapi_chunk=complapi_chunk,
+                            generic_chunk=generic_chunk,
+                        )
+
+                    yield generic_chunk
+                    chunk_idx += 1
+
+                # EOF fallback: if provider ended stream without a terminal event and
+                # we have a pending tool with buffered args, emit once.
+                # TODO Refactor or get rid of the try/except block below after the
+                #  code in `common/utils.py` is owned (after the vibe-code there is
+                #  replaced with proper code)
+                try:
+                    eof_chunk = responses_eof_finalize_chunk()
+                    if eof_chunk is not None:
+                        yield eof_chunk
+                except Exception:  # pylint: disable=broad-exception-caught
+                    # Ignore; best-effort fallback
+                    pass
+
+                return
+
+            except Exception as e:
+                if _attempt == 0 and _is_auth_error(e):
+                    await on_auth_error_async()
+                    continue
+                raise ProxyError(e) from e
 
 
 claude_code_router = ClaudeCodeRouter()
