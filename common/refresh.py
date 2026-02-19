@@ -3,11 +3,13 @@
 Refreshes the OpenAI subscription access token and updates the .env file.
 """
 
+import asyncio
 import base64
 import json
 import os
 import re
 import shutil
+import time
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +20,7 @@ from common.utils import ProxyError
 _PROJECT_ROOT = Path(__file__).parent.parent
 _DEFAULT_ENV_PATH = _PROJECT_ROOT / ".env"
 _OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+_REFRESH_BUFFER_SECONDS = 7 * 24 * 60 * 60  # 7 days
 
 # ANSI color codes (matching project conventions from config.py / utils.py)
 _RED = "\033[1;31m"
@@ -176,6 +179,43 @@ def refresh_openai_token(env_path: Path | None = None) -> dict[str, str]:
         print(f"{_RED}Warning: failed to remove backup: {exc}{_RESET}")
 
     return updates
+
+
+def needs_refresh() -> bool:
+    """Check if the token is near expiry (within 7 days)."""
+    expires_at = os.getenv("OPENAI_SUBSCRIPTION_EXPIRES_AT", "")
+    if not expires_at:
+        return False
+    try:
+        return time.time() > int(expires_at) - _REFRESH_BUFFER_SECONDS
+    except ValueError:
+        return False
+
+
+def ensure_token_fresh(env_path: Path | None = None) -> dict[str, str] | None:
+    """Refresh the token if it is near expiry. Returns updates dict or None."""
+    if not needs_refresh():
+        return None
+    print(f"{_BLUE}Token nearing expiry, refreshing...{_RESET}")
+    return refresh_openai_token(env_path)
+
+
+def on_auth_error(env_path: Path | None = None) -> dict[str, str]:
+    """Force-refresh the token in response to a 401 error."""
+    print(f"{_RED}401 received, forcing token refresh...{_RESET}")
+    return refresh_openai_token(env_path)
+
+
+async def ensure_token_fresh_async(env_path=None):
+    if not needs_refresh():
+        return None
+    print(f"{_BLUE}Token nearing expiry, refreshing...{_RESET}")
+    return await asyncio.to_thread(refresh_openai_token, env_path)
+
+
+async def on_auth_error_async(env_path=None):
+    print(f"{_RED}401 received, forcing token refresh...{_RESET}")
+    return await asyncio.to_thread(refresh_openai_token, env_path)
 
 
 if __name__ == "__main__":
