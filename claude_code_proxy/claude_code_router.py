@@ -16,7 +16,7 @@ from litellm import (
     ResponsesAPIStreamingResponse,
 )
 
-from claude_code_proxy.proxy_config import ENFORCE_ONE_TOOL_CALL_PER_RESPONSE
+from claude_code_proxy.proxy_config import CODEX_SUBSCRIPTION_INSTRUCTIONS, ENFORCE_ONE_TOOL_CALL_PER_RESPONSE, OPENAI_ACCOUNT_ID, OPENAI_API_KEY_SUBSCRIPTION, OPENAI_REQUEST
 from claude_code_proxy.route_model import ModelRoute
 from common.config import WRITE_TRACES_TO_FILES
 from common.tracing_in_markdown import (
@@ -86,12 +86,39 @@ class RoutedRequest:
         # Resolve outbound API base URL from provider prefix
         target_provider = self.model_route.target_model.split("/")[0] if "/" in self.model_route.target_model else None
         _PROVIDER_API_BASES = {
-            "openai": "https://api.openai.com",
+            "openai": "https://chatgpt.com/backend-api/codex" if OPENAI_REQUEST == "subscription" else "https://api.openai.com",
+            "openai-sub": "https://chatgpt.com/backend-api/codex",
             "anthropic": "https://api.anthropic.com",
             "gemini": "https://generativelanguage.googleapis.com",
             "azure": "https://<resource>.openai.azure.com",
         }
         self.outbound_api_base = _PROVIDER_API_BASES.get(target_provider)
+
+        # Use subscription API key when targeting ChatGPT subscription endpoint
+        _is_subscription = (
+            target_provider == "openai-sub"
+            or (target_provider == "openai" and OPENAI_REQUEST == "subscription")
+        )
+        self.outbound_api_key = OPENAI_API_KEY_SUBSCRIPTION if (_is_subscription and OPENAI_API_KEY_SUBSCRIPTION) else None
+
+        # Subscription endpoint adjustments
+        if _is_subscription:
+            if self.params_respapi is not None:
+                self.params_respapi["instructions"] = CODEX_SUBSCRIPTION_INSTRUCTIONS
+                self.params_respapi["store"] = False
+                self.params_respapi["stream"] = True
+                self.params_respapi.pop("metadata", None)
+                if OPENAI_ACCOUNT_ID:
+                    self.params_respapi["account_id"] = OPENAI_ACCOUNT_ID
+            if self.params_complapi is not None:
+                self.params_complapi["store"] = False
+                self.params_complapi["stream"] = True
+                self.params_complapi.pop("metadata", None)
+
+        # Outbound headers for subscription endpoint
+        self.outbound_headers = {}
+        if _is_subscription and OPENAI_ACCOUNT_ID:
+            self.outbound_headers["chatgpt-account-id"] = OPENAI_ACCOUNT_ID
 
         if WRITE_TRACES_TO_FILES:
             write_request_trace(
@@ -239,16 +266,27 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                response_respapi: ResponsesAPIResponse = litellm.responses(
+                response_or_stream = litellm.responses(
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
                 )
+
+                # Subscription forces stream=True; consume stream for non-streaming callers
+                if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
+                    response_respapi = None
+                    for chunk in response_or_stream:
+                        response_respapi = chunk
+                else:
+                    response_respapi = response_or_stream
+
                 response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
 
             else:
@@ -256,8 +294,10 @@ class ClaudeCodeRouter(CustomLLM):
                 response_complapi: ModelResponse = litellm.completion(
                     model=routed_request.model_route.target_model,
                     messages=routed_request.messages_complapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     # Drop any params that are not supported by the provider
@@ -310,16 +350,27 @@ class ClaudeCodeRouter(CustomLLM):
             )
 
             if routed_request.model_route.use_responses_api:
-                response_respapi: ResponsesAPIResponse = await litellm.aresponses(
+                response_or_stream = await litellm.aresponses(
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
                 )
+
+                # Subscription forces stream=True; consume stream for non-streaming callers
+                if isinstance(response_or_stream, BaseResponsesAPIStreamingIterator):
+                    response_respapi = None
+                    async for chunk in response_or_stream:
+                        response_respapi = chunk
+                else:
+                    response_respapi = response_or_stream
+
                 response_complapi: ModelResponse = convert_respapi_to_model_response(response_respapi)
 
             else:
@@ -327,8 +378,10 @@ class ClaudeCodeRouter(CustomLLM):
                 response_complapi: ModelResponse = await litellm.acompletion(
                     model=routed_request.model_route.target_model,
                     messages=routed_request.messages_complapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     # Drop any params that are not supported by the provider
@@ -385,8 +438,10 @@ class ClaudeCodeRouter(CustomLLM):
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
@@ -396,8 +451,10 @@ class ClaudeCodeRouter(CustomLLM):
                 resp_stream: CustomStreamWrapper = litellm.completion(
                     model=routed_request.model_route.target_model,
                     messages=routed_request.messages_complapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     # Drop any params that are not supported by the provider
@@ -477,8 +534,10 @@ class ClaudeCodeRouter(CustomLLM):
                     # TODO Make sure all params are supported
                     model=routed_request.model_route.target_model,
                     input=routed_request.messages_respapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     **routed_request.params_respapi,
@@ -488,8 +547,10 @@ class ClaudeCodeRouter(CustomLLM):
                 resp_stream: CustomStreamWrapper = await litellm.acompletion(
                     model=routed_request.model_route.target_model,
                     messages=routed_request.messages_complapi,
+                    api_base=routed_request.outbound_api_base,
+                    api_key=routed_request.outbound_api_key,
                     logger_fn=logger_fn,
-                    headers=headers or {},
+                    headers={**(headers or {}), **routed_request.outbound_headers},
                     timeout=timeout,
                     client=client,
                     # Drop any params that are not supported by the provider
